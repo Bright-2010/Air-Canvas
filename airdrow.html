@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Air Canvas - Vision Pro Experience</title>
+    <!-- 引入 MediaPipe Hands 相关库 -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #input_video {
+            display: none;
+        }
+
+        #output_canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* 调色板 UI */
+        #palette {
+            position: absolute;
+            z-index: 10;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(25px);
+            border-radius: 50%;
+            padding: 20px;
+            display: none;
+            flex-wrap: wrap;
+            width: 260px;
+            height: 260px;
+            justify-content: center;
+            align-items: center;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            pointer-events: none;
+            transition: opacity 0.3s ease, transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            transform: scale(0.8);
+        }
+
+        #palette.visible {
+            display: flex;
+            transform: scale(1);
+            opacity: 1;
+        }
+
+        .color-option {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            margin: 6px;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+
+        .color-option.active {
+            border-color: white;
+            transform: scale(1.2);
+            box-shadow: 0 0 15px rgba(255,255,255,0.5);
+        }
+
+        .color-option.selected-flash {
+            animation: flash 0.4s ease-out;
+        }
+
+        @keyframes flash {
+            0% { transform: scale(1.2); filter: brightness(1); }
+            50% { transform: scale(1.5); filter: brightness(2); }
+            100% { transform: scale(1.2); filter: brightness(1); }
+        }
+
+        .eraser-option {
+            background: #333;
+            color: white;
+            font-size: 20px;
+            border: 1px solid rgba(255,255,255,0.3);
+        }
+
+        /* 清除按钮样式 */
+        .clear-option {
+            background: #ff3b30;
+            color: white;
+            border: 1px solid rgba(255,255,255,0.3);
+        }
+
+        #status-indicator {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 20;
+            padding: 12px 28px;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(10px);
+            border-radius: 30px;
+            color: white;
+            font-size: 14px;
+            font-weight: 500;
+            pointer-events: none;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            text-align: center;
+            min-width: 320px;
+        }
+
+        .brush-preview {
+            position: absolute;
+            pointer-events: none;
+            z-index: 15;
+            border-radius: 50%;
+            border: 2px solid white;
+            transform: translate(-50%, -50%);
+            display: none;
+            box-shadow: 0 0 20px rgba(255,255,255,0.4);
+            transition: width 0.1s, height 0.1s, border-color 0.2s;
+        }
+    </style>
+</head>
+<body>
+
+<div id="container">
+    <video id="input_video"></video>
+    <canvas id="drawing_canvas" style="display:none;"></canvas>
+    <canvas id="output_canvas"></canvas>
+    
+    <div id="palette">
+        <div class="color-option" style="background: #ff3b30;" data-color="#ff3b30"></div>
+        <div class="color-option" style="background: #ff9500;" data-color="#ff9500"></div>
+        <div class="color-option" style="background: #ffcc00;" data-color="#ffcc00"></div>
+        <div class="color-option" style="background: #4cd964;" data-color="#4cd964"></div>
+        <div class="color-option" style="background: #007aff;" data-color="#007aff"></div>
+        <div class="color-option" style="background: #af52de;" data-color="#af52de"></div>
+        <div class="color-option" style="background: #ffffff;" data-color="#ffffff"></div>
+        
+        <!-- 橡皮擦按钮 -->
+        <div class="color-option eraser-option" data-color="eraser" title="橡皮擦">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21Z"/><path d="m22 21-10-10"/><path d="m18 11-4-4"/></svg>
+        </div>
+
+        <!-- 新增：一键清空按钮 -->
+        <div class="color-option clear-option" data-action="clear-all" title="清空全部">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+        </div>
+    </div>
+
+    <div id="status-indicator">正在初始化摄像头...</div>
+    <div id="brush-cursor" class="brush-preview"></div>
+</div>
+
+<script>
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    
+    const drawingCanvas = document.getElementById('drawing_canvas');
+    const drawingCtx = drawingCanvas.getContext('2d');
+
+    const palette = document.getElementById('palette');
+    const statusIndicator = document.getElementById('status-indicator');
+    const brushCursor = document.getElementById('brush-cursor');
+
+    let isDrawing = false;
+    let currentColor = '#007aff';
+    let isEraser = false;
+    let paletteActive = false;
+    let lastPinchState = false;
+    
+    let paths = [];
+    let currentPath = [];
+    let paletteFixedPos = { x: 0, y: 0 };
+
+    // 平滑和防抖变量
+    let smoothedX = 0;
+    let smoothedY = 0;
+    const SMOOTHING_FACTOR = 0.35; 
+    const PINCH_THRESHOLD_START = 0.04; 
+    const PINCH_THRESHOLD_KEEP = 0.055; 
+    let pinchCooldownFrames = 0; 
+    const MAX_COOLDOWN_FRAMES = 3; 
+
+    function resizeCanvas() {
+        canvasElement.width = window.innerWidth;
+        canvasElement.height = window.innerHeight;
+        drawingCanvas.width = window.innerWidth;
+        drawingCanvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    function getDistance(p1, p2) {
+        return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+    }
+
+    function onResults(results) {
+        drawingCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+        drawPathsToLayer(drawingCtx);
+
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        
+        canvasCtx.translate(canvasElement.width, 0);
+        canvasCtx.scale(-1, 1);
+
+        canvasCtx.globalAlpha = 0.6;
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.globalAlpha = 1.0;
+
+        const handPresent = results.multiHandLandmarks && results.multiHandLandmarks.length > 0;
+
+        if (handPresent) {
+            const landmarks = results.multiHandLandmarks[0];
+            const thumbTip = landmarks[4];
+            const indexTip = landmarks[8];
+            const wrist = landmarks[0];
+
+            // 1. 坐标平滑处理
+            const targetX = indexTip.x * canvasElement.width;
+            const targetY = indexTip.y * canvasElement.height;
+            
+            if (smoothedX === 0) {
+                smoothedX = targetX;
+                smoothedY = targetY;
+            } else {
+                smoothedX += (targetX - smoothedX) * SMOOTHING_FACTOR;
+                smoothedY += (targetY - smoothedY) * SMOOTHING_FACTOR;
+            }
+
+            const x = smoothedX;
+            const y = smoothedY;
+            const screenX = (1 - (x / canvasElement.width)) * canvasElement.width;
+            const screenY = y;
+
+            // 2. 捏合检测
+            const pinchDist = getDistance(thumbTip, indexTip);
+            let isPinchingNow = false;
+            
+            if (isDrawing) {
+                isPinchingNow = pinchDist < PINCH_THRESHOLD_KEEP;
+            } else {
+                isPinchingNow = pinchDist < PINCH_THRESHOLD_START;
+            }
+
+            // 3. 丢帧容错
+            if (isDrawing && !isPinchingNow && pinchCooldownFrames < MAX_COOLDOWN_FRAMES) {
+                isPinchingNow = true;
+                pinchCooldownFrames++;
+            } else if (isPinchingNow) {
+                pinchCooldownFrames = 0;
+            }
+
+            // 呼出色板手势检测
+            const palmOpenDist = (
+                getDistance(wrist, landmarks[8]) + 
+                getDistance(wrist, landmarks[12]) + 
+                getDistance(wrist, landmarks[16]) + 
+                getDistance(wrist, landmarks[20])
+            ) / 4;
+            
+            if (palmOpenDist > 0.4 && !paletteActive) {
+                paletteActive = true;
+                paletteFixedPos.x = (1 - landmarks[9].x) * canvasElement.width - 130;
+                paletteFixedPos.y = landmarks[9].y * canvasElement.height - 130;
+                palette.style.left = `${paletteFixedPos.x}px`;
+                palette.style.top = `${paletteFixedPos.y}px`;
+            } else if (palmOpenDist < 0.2 && paletteActive) {
+                paletteActive = false;
+            }
+
+            brushCursor.style.display = 'block';
+            brushCursor.style.left = `${screenX}px`;
+            brushCursor.style.top = `${screenY}px`;
+            brushCursor.style.borderColor = isEraser ? '#fff' : currentColor;
+            brushCursor.style.width = isPinchingNow ? '12px' : '30px';
+            brushCursor.style.height = isPinchingNow ? '12px' : '30px';
+
+            if (paletteActive) {
+                palette.classList.add('visible');
+                
+                // 处理颜色选择和动作触发
+                const options = palette.querySelectorAll('.color-option');
+                options.forEach(opt => {
+                    const rect = opt.getBoundingClientRect();
+                    const distToCenter = Math.sqrt(Math.pow(screenX - (rect.left + rect.width / 2), 2) + Math.pow(screenY - (rect.top + rect.height / 2), 2));
+                    
+                    if (distToCenter < 40) {
+                        opt.classList.add('active');
+                        if (isPinchingNow && !lastPinchState) {
+                            // 执行动作
+                            const action = opt.getAttribute('data-action');
+                            if (action === 'clear-all') {
+                                paths = []; // 清空路径数组
+                                statusIndicator.innerText = "画布已清空";
+                            } else {
+                                const selectedColor = opt.getAttribute('data-color');
+                                if (selectedColor === 'eraser') {
+                                    isEraser = true;
+                                } else {
+                                    isEraser = false;
+                                    currentColor = selectedColor;
+                                }
+                            }
+                            opt.classList.add('selected-flash');
+                            setTimeout(() => opt.classList.remove('selected-flash'), 400);
+                        }
+                    } else {
+                        opt.classList.remove('active');
+                    }
+                });
+                statusIndicator.innerHTML = "色板模式<br><span style='font-size:12px; opacity:0.7'>捏合选择或执行动作 | 攥拳返回</span>";
+                isDrawing = false; 
+            } else {
+                palette.classList.remove('visible');
+                if (isPinchingNow) {
+                    if (!isDrawing) {
+                        isDrawing = true;
+                        currentPath = { color: currentColor, isEraser: isEraser, points: [] };
+                        paths.push(currentPath);
+                    }
+                    currentPath.points.push({ x, y });
+                    statusIndicator.innerText = isEraser ? "正在擦除线条..." : "正在绘图...";
+                } else {
+                    isDrawing = false;
+                    statusIndicator.innerText = isEraser ? "当前模式：橡皮擦" : "当前模式：画笔";
+                }
+            }
+            lastPinchState = isPinchingNow;
+            drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#ffffff11', lineWidth: 1});
+        } else {
+            smoothedX = 0;
+            smoothedY = 0;
+            isDrawing = false;
+            brushCursor.style.display = 'none';
+        }
+
+        canvasCtx.drawImage(drawingCanvas, 0, 0);
+        canvasCtx.restore();
+    }
+
+    function drawPathsToLayer(ctx) {
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+
+        paths.forEach(path => {
+            if (path.points.length < 2) return;
+            
+            ctx.beginPath();
+            if (path.isEraser) {
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.lineWidth = 40;
+                ctx.strokeStyle = 'rgba(0,0,0,1)';
+                ctx.shadowBlur = 0;
+            } else {
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.lineWidth = 6;
+                ctx.strokeStyle = path.color;
+                ctx.shadowBlur = 12;
+                ctx.shadowColor = path.color;
+            }
+            
+            ctx.moveTo(path.points[0].x, path.points[0].y);
+            for (let i = 1; i < path.points.length; i++) {
+                ctx.lineTo(path.points[i].x, path.points[i].y);
+            }
+            
+            ctx.stroke();
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.shadowBlur = 0;
+        });
+    }
+
+    const hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.8,
+        minTrackingConfidence: 0.8
+    });
+
+    hands.onResults(onResults);
+
+    const camera = new Camera(videoElement, {
+        onFrame: async () => {
+            await hands.send({image: videoElement});
+        },
+        width: 1280,
+        height: 720
+    });
+
+    camera.start();
+</script>
+
+</body>
+</html>
